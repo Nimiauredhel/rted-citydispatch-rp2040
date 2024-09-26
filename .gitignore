@@ -1,0 +1,11 @@
+*.o
+*.ko
+*.obj
+*.elf
+*.bin
+*.hex
+compile_commands.json
+
+FreeRTOS-Kernel/
+build/
+.cache/
