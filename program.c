@@ -108,7 +108,7 @@ int main(void)
     xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
             NULL, LOGGER_PRIORITY, NULL);
     xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
-            &cityData->incomingQueue, EVENT_GENERATOR_PRIORITY, NULL);
+            &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, NULL);
 
     // begin execution
     vTaskStartScheduler();
@@ -142,14 +142,14 @@ void InitializeCityTasks(CityData_t *cityData)
     cityData->dispatcherStatus = xTaskCreate(
             CentralDispatcherTask,
             "CentralDispatcher", TASK_STACK_SIZE,
-            &cityData, CENTRAL_DISPATCHER_PRIORITY, NULL);
+            cityData, CENTRAL_DISPATCHER_PRIORITY, NULL);
 
     for (int i = 0; i < NUM_DEPARTMENTS; i++)
     {
             cityData->departments[i].status = xTaskCreate(
             DepartmentDispatcherTask,
             departmentNames[cityData->departments[i].code], TASK_STACK_SIZE,
-            &cityData->departments[i], DEPARTMENT_DISPATCHER_PRIORITY, NULL);
+            &(cityData->departments[i]), DEPARTMENT_DISPATCHER_PRIORITY, NULL);
     }
 }
 
@@ -157,15 +157,17 @@ void CentralDispatcherTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
     CityData_t *cityData = (CityData_t *)param;
-    CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
+    CityEvent_t handledEvent;
     printf("Central Dispatcher Starting...\n");
 
     for(;;)
     {
-        printf("Central Dispatcher Waiting...\n");
-        xQueueReceive(cityData->incomingQueue, handledEvent, portMAX_DELAY);
-        printf("Central Dispatcher Routing Event \"%s\" to %s Department.\n", handledEvent->description, departmentNames[handledEvent->code]);
-        xQueueSendToBack(cityData->departments[handledEvent->code].jobQueue, handledEvent, portMAX_DELAY);
+        printf("Central Dispatcher Waiting...\nQueue Handle: %d\n", cityData->incomingQueue);
+        if (xQueueReceive(cityData->incomingQueue, &(handledEvent), portMAX_DELAY))
+        {
+            printf("Central Dispatcher Routing Event \"%s\" to %s Department.\n", handledEvent.description, departmentNames[handledEvent.code]);
+            xQueueSend(cityData->departments[handledEvent.code].jobQueue, &(handledEvent), portMAX_DELAY);
+        }
     }
 }
 void DepartmentDispatcherTask(void *param)
@@ -173,17 +175,21 @@ void DepartmentDispatcherTask(void *param)
     vTaskDelay(INITIAL_SLEEP);
     CityDepartment_t *departmentData = (CityDepartment_t *)param;
     CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
+    bool hasEvent;
     printf("%s Department Dispatcher Starting...\n", departmentNames[departmentData->code]);
 
     for(;;)
     {
         printf("%s Department Dispatcher Waiting...\n", departmentNames[departmentData->code]);
-        xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY);
-        printf("%s Department Dispatcher Assigning Event \"%s\"\n", departmentNames[departmentData->code], handledEvent->description);
-        CityEvent_t *passedEvent = pvPortMalloc(sizeof(CityEvent_t));
-        *passedEvent = *handledEvent;
-        xTaskCreate(DepartmentHandlerTask, handledEvent->description, TASK_STACK_SIZE,
-        &passedEvent, DEPARTMENT_HANDLER_PRIORITY, NULL);
+
+        if (xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY))
+        {
+            printf("%s Department Dispatcher Assigning Event \"%s\"\n", departmentNames[departmentData->code], handledEvent->description);
+            CityEvent_t *passedEvent = pvPortMalloc(sizeof(CityEvent_t));
+            *passedEvent = *handledEvent;
+            xTaskCreate(DepartmentHandlerTask, handledEvent->description, TASK_STACK_SIZE,
+            &passedEvent, DEPARTMENT_HANDLER_PRIORITY, NULL);
+        }
     }
 }
 void DepartmentHandlerTask(void *param)
@@ -217,24 +223,23 @@ void EventGeneratorTask(void *param)
     QueueHandle_t *incomingQueue = (QueueHandle_t *)param;
     uint32_t nextSleep;
     uint8_t nextEventTemplate;
-    CityEvent_t nextEvent;
+    CityEvent_t *nextEvent = pvPortMalloc(sizeof(CityEvent_t));
 
     for(;;)
     {
         nextEventTemplate = RandomNumber()%8;
-        nextEvent.code = eventTemplates[nextEventTemplate].code;
-        nextEvent.description = eventTemplates[nextEventTemplate].description;
-        nextEvent.ticks = eventTemplates[nextEventTemplate].minTicks
+        nextEvent->code = eventTemplates[nextEventTemplate].code;
+        nextEvent->description = eventTemplates[nextEventTemplate].description;
+        nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
         gpio_put(28, true);
-        printf("\nEmitting Event: %s\nEstimated handling time: %u ticks\n\n", nextEvent.description, nextEvent.ticks);
-        xQueueSendToBack(*incomingQueue, &nextEvent, portMAX_DELAY);
+        printf("\nEmitting Event: %s\nEstimated handling time: %u ticks\n\nQueue Handle: %d\n", nextEvent->description, nextEvent->ticks, incomingQueue);
+        xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
         gpio_put(28, false);
 
         nextSleep = EVENT_GENERATOR_SLEEP_MIN
             + (RandomNumber()%(EVENT_GENERATOR_SLEEP_MAX-EVENT_GENERATOR_SLEEP_MIN));
         vTaskDelay(nextSleep);
-
     }
 }
 uint32_t RandomNumber(void)
