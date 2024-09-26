@@ -5,42 +5,113 @@
 #include "pico/stdio_usb.h"
 #include "pico/printf.h"
 #include "pico/stdlib.h"
+#include "hardware/gpio.h"
+#include "hardware/regs/rosc.h"
+#include "hardware/regs/addressmap.h"
 // FreeRTOS libs
 #include "FreeRTOS.h"
 #include "FreeRTOSConfig.h"
 #include "task.h"
 #include "queue.h"
 
+#define NUM_DEPARTMENTS (4)
+
+#define TASK_STACK_SIZE (configMINIMAL_STACK_SIZE)
+
+#define EVENT_GENERATOR_PRIORITY (50)
+#define LOGGER_PRIORITY (100)
+#define CENTRAL_DISPATCHER_PRIORITY (150)
+#define DEPARTMENT_DISPATCHER_PRIORITY (200)
+#define DEPARTMENT_HANDLER_PRIORITY (250)
+
+#define EVENT_GENERATOR_SLEEP_MAX (4000)
+#define EVENT_GENERATOR_SLEEP_MIN (1000)
+#define LOGGER_SLEEP (1000)
+#define CENTRAL_DISPATCHER_SLEEP (100)
+#define DEPARTMENT_DISPATCHER_SLEEP (100)
+
+// *** Types ***
+typedef enum DepartmentCode_t
+{
+    POLICE = 0,
+    FIRE = 1,
+    MEDICAL = 2,
+    COVID = 3
+} DepartmentCode_t;
+typedef struct CityDepartment
+{
+    DepartmentCode_t code;
+    BaseType_t status;
+    QueueHandle_t jobQueue;
+    uint8_t freeHandlers;
+} CityDepartment_t;
+typedef struct CityData
+{
+    BaseType_t dispatcherStatus;
+    QueueHandle_t incomingQueue;
+    CityDepartment_t departments[NUM_DEPARTMENTS];
+} CityData_t;
+typedef struct CityEvent
+{
+    TickType_t ticks;
+    DepartmentCode_t code;
+    char *description;
+} CityEvent_t;
+typedef struct CityEventTemplate
+{
+    TickType_t maxTicks;
+    TickType_t minTicks;
+    DepartmentCode_t code;
+    char *description;
+} CityEventTemplate_t;
+
+// *** Global Constants
+const char departmentNames[NUM_DEPARTMENTS][10] = {"Police\0", "Fire\0", "Medical\0", "Covid-19\0"};
+// Events will be generated, randomly or otherwise,
+// from this pool of event templates
+CityEventTemplate_t eventTemplates[8] =
+{
+    {2000, 500, POLICE, "Minor Police Event"},
+    {5000, 2500, POLICE, "Major Police Event"},
+    {2000, 500, FIRE, "Minor Fire Event"},
+    {5000, 2500, FIRE, "Major Fire Event"},
+    {2000, 500, MEDICAL, "Minor Medical Event"},
+    {5000, 2500, MEDICAL, "Major Medical Event"},
+    {2024, 2019, COVID, "Covid-19 Isolated Event"},
+    {10000, 5000, COVID, "Covid-19 Outbreak Event"},
+};
+
+// *** Function Declarations ***
+CityData_t* InitializeCityData(void);
+void InitializeCityTasks(CityData_t *cityData);
 void CentralDispatcherTask(void *param);
 void DepartmentDispatcherTask(void *param);
 void DepartmentHandlerTask(void *param);
 void LoggerTask(void *param);
 void EventGeneratorTask(void *param);
-void ExampleTask1(void *param);
-void ExampleTask2(void *param);
+uint32_t RandomNumber(void);
 
+// *** Function Implementations ***
 int main(void)
 {
+    // hardware specific initialization
     stdio_init_all();
+    gpio_init(28);
+    gpio_set_dir(28, true);
+    gpio_put(28, false);
 
-    TaskHandle_t gExampleTask1 = NULL;
-    TaskHandle_t gExampleTask2 = NULL;
+    // application data initialization
+    CityData_t *cityData = InitializeCityData();
 
-    uint32_t status1 = xTaskCreate(
-            ExampleTask1,
-            "Example Task 1",
-            1024,
-            NULL,
-            tskIDLE_PRIORITY,
-            &gExampleTask1);
-    uint32_t status2 = xTaskCreate(
-            ExampleTask2,
-            "Example Task 2",
-            1024,
-            NULL,
-            tskIDLE_PRIORITY,
-            &gExampleTask2);
+    // initial tasks creation
+    InitializeCityTasks(cityData);
 
+    xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
+            NULL, LOGGER_PRIORITY, NULL);
+    xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
+            NULL, EVENT_GENERATOR_PRIORITY, NULL);
+
+    // begin execution
     vTaskStartScheduler();
 
     for(;;)
@@ -49,51 +120,112 @@ int main(void)
     }
 }
 
+CityData_t* InitializeCityData(void)
+{
+    static const uint8_t departmentHandlerCounts[NUM_DEPARTMENTS] = {4, 4, 4, 4};
+    static const uint16_t departmentQueueLengths[NUM_DEPARTMENTS] = {200, 200, 200, 200};
+
+    CityData_t *cityData = pvPortMalloc(sizeof(CityData_t));
+    cityData->incomingQueue = xQueueCreate(200, sizeof(CityEvent_t));
+
+    for (int i = 0; i < NUM_DEPARTMENTS; i++)
+    {
+        cityData->departments[i].code = i;
+        cityData->departments[i].jobQueue = xQueueCreate(departmentQueueLengths[i], sizeof(CityEvent_t));
+        cityData->departments[i].freeHandlers = departmentHandlerCounts[i];
+    }
+
+    return cityData;
+}
+
+void InitializeCityTasks(CityData_t *cityData)
+{
+    cityData->dispatcherStatus = xTaskCreate(
+            CentralDispatcherTask,
+            "CentralDispatcher", TASK_STACK_SIZE,
+            cityData->incomingQueue, CENTRAL_DISPATCHER_PRIORITY, NULL);
+
+    for (int i = 0; i < NUM_DEPARTMENTS; i++)
+    {
+            cityData->departments[i].status = xTaskCreate(
+            DepartmentDispatcherTask,
+            departmentNames[cityData->departments[i].code], TASK_STACK_SIZE,
+            &cityData->departments[i], DEPARTMENT_DISPATCHER_PRIORITY, NULL);
+    }
+}
+
 void CentralDispatcherTask(void *param)
 {
+    vTaskDelay(500);
+    QueueHandle_t incomingQueue = (QueueHandle_t)param;
+    printf("Central Dispatcher Starting...\n");
+
     for(;;)
     {
+        printf("Central Dispatcher Hello!\n");
+        vTaskDelay(CENTRAL_DISPATCHER_SLEEP);
     }
 }
 void DepartmentDispatcherTask(void *param)
 {
+    vTaskDelay(500);
+    CityDepartment_t *departmentData = (CityDepartment_t *)param;
+    printf("%s Department Dispatcher Starting...\n", departmentNames[departmentData->code]);
+
     for(;;)
     {
+        printf("%s Department Dispatcher Hello!\n", departmentNames[departmentData->code]);
+        vTaskDelay(DEPARTMENT_DISPATCHER_SLEEP);
     }
 }
 void DepartmentHandlerTask(void *param)
 {
     // handle event here
+    //CityEvent_t *event = (CityEvent_t *)param;
 
+    // this is a temporary task,
+    // so it must delete itself when finished
     vTaskDelete(NULL);
 }
 void LoggerTask(void *param)
 {
+    vTaskDelay(500);
+    printf("Logger Starting...\n");
+
     for(;;)
     {
+        printf("Logger Hello!\n");
+        vTaskDelay(LOGGER_SLEEP);
     }
 }
 void EventGeneratorTask(void *param)
 {
+    vTaskDelay(1000);
+    printf("Event Generator Starting...\n");
+    uint32_t nextSleep = EVENT_GENERATOR_SLEEP_MAX;
+
     for(;;)
     {
+        gpio_put(28, true);
+        printf("\nEvent Generator Hello!\n\n");
+        vTaskDelay(100);
+        gpio_put(28, false);
+        vTaskDelay(nextSleep);
+        nextSleep = EVENT_GENERATOR_SLEEP_MIN
+            + (RandomNumber()%(EVENT_GENERATOR_SLEEP_MAX-EVENT_GENERATOR_SLEEP_MIN));
     }
 }
-
-void ExampleTask1(void *param)
+uint32_t RandomNumber(void)
 {
-    for(;;)
+    int k = 0;
+    int random=0;
+    volatile uint32_t *rnd_reg=(uint32_t *)(ROSC_BASE + ROSC_RANDOMBIT_OFFSET);
+    
+    for(k=0;k<32;k++)
     {
-        printf("Hello from example task 1!\n");
-        vTaskDelay(1000);
+        random = random << 1;
+        random=random + (0x00000001 & (*rnd_reg));
     }
-}
 
-void ExampleTask2(void *param)
-{
-    for(;;)
-    {
-        printf("Hello from example task 2!\n");
-        vTaskDelay(2000);
-    }
+    return random;
 }

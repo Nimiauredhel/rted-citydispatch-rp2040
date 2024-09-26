@@ -36,6 +36,7 @@ target_link_libraries( program
     pico_stdlib
     pico_malloc
     pico_stdio_usb
+    hardware_gpio
     FreeRTOS
 )
 
