@@ -190,7 +190,7 @@ void DepartmentDispatcherTask(void *param)
             CityEvent_t *passedEvent = pvPortMalloc(sizeof(CityEvent_t));
             *passedEvent = *handledEvent;
             xTaskCreate(DepartmentHandlerTask, handledEvent->description, TASK_STACK_SIZE,
-            &passedEvent, DEPARTMENT_HANDLER_PRIORITY, NULL);
+            passedEvent, DEPARTMENT_HANDLER_PRIORITY, NULL);
         }
     }
 }
@@ -213,7 +213,6 @@ void LoggerTask(void *param)
 
     for(;;)
     {
-        printf("Logger Hello!\n");
         vTaskDelay(LOGGER_SLEEP);
     }
 }
