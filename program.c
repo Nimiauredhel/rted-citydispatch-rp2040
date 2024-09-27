@@ -20,7 +20,7 @@
 #define TASK_STACK_SIZE (configMINIMAL_STACK_SIZE)
 #define INCOMING_QUEUE_LENGTH (200)
 #define DEPARTMENT_QUEUE_LENGTH (200)
-#define LOGGER_QUEUE_LENGTH (200)
+#define LOGGER_QUEUE_LENGTH (10000)
 
 #define EVENT_GENERATOR_PRIORITY (50)
 #define LOGGER_PRIORITY (100)
@@ -76,8 +76,8 @@ CityEventTemplate_t eventTemplates[8] =
 {
     {2000, 500, MEDICAL, "Minor Medical Event"},
     {5000, 2500, MEDICAL, "Major Medical Event"},
-    {2000, 500, POLICE, "Minor Police Event"},
-    {5000, 2500, POLICE, "Major Police Event"},
+    {2000, 500, POLICE, "Minor Criminal Event"},
+    {5000, 2500, POLICE, "Major Criminal Event"},
     {2000, 500, FIRE, "Minor Fire Event"},
     {5000, 2500, FIRE, "Major Fire Event"},
     {2024, 2019, COVID, "Covid-19 Isolated Event"},
