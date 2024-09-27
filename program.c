@@ -1,6 +1,7 @@
 // C libs
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdio.h>
 // RP-2040 libs
 #include "pico/stdlib.h"
 #include "pico/printf.h"
@@ -28,8 +29,8 @@
 #define DEPARTMENT_HANDLER_PRIORITY (250)
 
 #define INITIAL_SLEEP (1500)
-#define EVENT_GENERATOR_SLEEP_MAX (4000)
-#define EVENT_GENERATOR_SLEEP_MIN (1000)
+#define EVENT_GENERATOR_SLEEP_MAX (2000)
+#define EVENT_GENERATOR_SLEEP_MIN (500)
 #define LOGGER_SLEEP (1000)
 
 // *** Types ***
@@ -40,12 +41,25 @@ typedef enum DepartmentCode_t
     FIRE = 2,
     COVID = 3
 } DepartmentCode_t;
+typedef struct CityEvent
+{
+    TickType_t ticks;
+    DepartmentCode_t code;
+    char *description;
+} CityEvent_t;
+typedef struct CityDepartmentHandlerState
+{
+    bool busy;
+    char name[16];
+    CityEvent_t currentEvent;
+} CityDepartmentHandlerState_t;
 typedef struct CityDepartment
 {
     DepartmentCode_t code;
     BaseType_t status;
     QueueHandle_t jobQueue;
-    uint8_t availableResources;
+    uint8_t handlerCount;
+    CityDepartmentHandlerState_t *handlerStates;
 } CityDepartment_t;
 typedef struct CityData
 {
@@ -53,12 +67,6 @@ typedef struct CityData
     QueueHandle_t incomingQueue;
     CityDepartment_t departments[NUM_DEPARTMENTS];
 } CityData_t;
-typedef struct CityEvent
-{
-    TickType_t ticks;
-    DepartmentCode_t code;
-    char *description;
-} CityEvent_t;
 typedef struct CityEventTemplate
 {
     TickType_t maxTicks;
@@ -73,12 +81,12 @@ const char departmentNames[NUM_DEPARTMENTS][10] = {"Medical\0", "Police\0", "Fir
 // from this pool of event templates
 CityEventTemplate_t eventTemplates[8] =
 {
-    {2000, 500, MEDICAL, "Minor Medical Event"},
-    {5000, 2500, MEDICAL, "Major Medical Event"},
-    {2000, 500, POLICE, "Minor Criminal Event"},
-    {5000, 2500, POLICE, "Major Criminal Event"},
+    {2500, 1000, MEDICAL, "Minor Medical Event"},
+    {6000, 3000, MEDICAL, "Major Medical Event"},
+    {2000, 1000, POLICE, "Minor Criminal Event"},
+    {5400, 2500, POLICE, "Major Criminal Event"},
     {2000, 500, FIRE, "Minor Fire Event"},
-    {5000, 2500, FIRE, "Major Fire Event"},
+    {8000, 3000, FIRE, "Major Fire Event"},
     {2024, 2019, COVID, "Covid-19 Isolated Event"},
     {10000, 5000, COVID, "Covid-19 Outbreak Event"},
 };
@@ -134,7 +142,15 @@ CityData_t* InitializeCityData(void)
     {
         cityData->departments[i].code = i;
         cityData->departments[i].jobQueue = xQueueCreate(DEPARTMENT_QUEUE_LENGTH, sizeof(CityEvent_t));
-        cityData->departments[i].availableResources = departmentInitialResources[i];
+        cityData->departments[i].handlerCount = departmentInitialResources[i];
+        cityData->departments[i].handlerStates = pvPortMalloc(sizeof(CityDepartmentHandlerState_t)
+                * departmentInitialResources[i]);
+                
+        for (int j = 0; j < departmentInitialResources[i]; j++)
+        {
+            cityData->departments[i].handlerStates[j].busy = false;
+            sprintf(cityData->departments[i].handlerStates[j].name, "%s-%u", departmentNames[i], j+1);
+        }
     }
 
     return cityData;
@@ -178,8 +194,13 @@ void DepartmentDispatcherTask(void *param)
     vTaskDelay(INITIAL_SLEEP);
     CityDepartment_t *departmentData = (CityDepartment_t *)param;
     CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
-    bool hasEvent;
-    printf("%s Department Dispatcher Starting...\n", departmentNames[departmentData->code]);
+    printf("%s Department Dispatcher Initializing Handlers.\n", departmentNames[departmentData->code]);
+
+    for (int i = 0; i < departmentData->handlerCount; i++)
+    {
+        xTaskCreate(DepartmentHandlerTask, handledEvent->description, TASK_STACK_SIZE,
+        &(departmentData->handlerStates[i]), DEPARTMENT_HANDLER_PRIORITY, NULL);
+    }
 
     for(;;)
     {
@@ -188,24 +209,44 @@ void DepartmentDispatcherTask(void *param)
         if (xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY))
         {
             printf("%s Department Dispatcher Assigning Event \"%s\"\n", departmentNames[departmentData->code], handledEvent->description);
-            CityEvent_t *passedEvent = pvPortMalloc(sizeof(CityEvent_t));
-            *passedEvent = *handledEvent;
-            xTaskCreate(DepartmentHandlerTask, handledEvent->description, TASK_STACK_SIZE,
-            passedEvent, DEPARTMENT_HANDLER_PRIORITY, NULL);
+            bool assigned = false;
+
+            do
+            {
+                for (int i = 0; i < departmentData->handlerCount; i++)
+                {
+                    if (!(departmentData->handlerStates[i].busy))
+                    {
+                        departmentData->handlerStates[i].currentEvent = *handledEvent;
+                        departmentData->handlerStates[i].busy = true;
+                        assigned = true;
+                        break;
+                    }
+                }
+            } while(!assigned);
         }
     }
 }
 void DepartmentHandlerTask(void *param)
 {
     // handle event here
-    CityEvent_t *event = (CityEvent_t *)param;
-    printf("%s Department Handler Started Handling Event \"%s\"\n", departmentNames[event->code], event->description);
-    vTaskDelay(event->ticks);
-    printf("%s Department Handler Finished Handling Event \"%s\"\n", departmentNames[event->code], event->description);
-    // this is a temporary task,
-    // so it must delete itself when finished
-    vPortFree(event);
-    vTaskDelete(NULL);
+    CityDepartmentHandlerState_t *handlerState = (CityDepartmentHandlerState_t *)param;
+    printf("Unit %s Initialized.\n", handlerState->name);
+
+    for(;;)
+    {
+        printf("Unit %s Awaiting Instructions.\n", handlerState->name);
+
+        while(!handlerState->busy)
+        {
+            vTaskDelay(1);
+        }
+
+        printf("Unit %s Began Handling Event \"%s\"\n", handlerState->name, handlerState->currentEvent.description);
+        vTaskDelay(handlerState->currentEvent.ticks);
+        handlerState->busy = false;
+        printf("Unit %s Finished Handling Event \"%s\"\n", handlerState->name, handlerState->currentEvent.description);
+    }
 }
 void LoggerTask(void *param)
 {
