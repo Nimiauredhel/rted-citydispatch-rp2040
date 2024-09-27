@@ -18,6 +18,9 @@
 #define NUM_DEPARTMENTS (4)
 
 #define TASK_STACK_SIZE (configMINIMAL_STACK_SIZE)
+#define INCOMING_QUEUE_LENGTH (200)
+#define DEPARTMENT_QUEUE_LENGTH (200)
+#define LOGGER_QUEUE_LENGTH (200)
 
 #define EVENT_GENERATOR_PRIORITY (50)
 #define LOGGER_PRIORITY (100)
@@ -33,9 +36,9 @@
 // *** Types ***
 typedef enum DepartmentCode_t
 {
-    POLICE = 0,
-    FIRE = 1,
-    MEDICAL = 2,
+    MEDICAL = 0,
+    POLICE = 1,
+    FIRE = 2,
     COVID = 3
 } DepartmentCode_t;
 typedef struct CityDepartment
@@ -66,17 +69,17 @@ typedef struct CityEventTemplate
 } CityEventTemplate_t;
 
 // *** Global Constants
-const char departmentNames[NUM_DEPARTMENTS][10] = {"Police\0", "Fire\0", "Medical\0", "Covid-19\0"};
+const char departmentNames[NUM_DEPARTMENTS][10] = {"Medical\0", "Police\0", "Fire\0", "Covid-19\0"};
 // Events will be generated, randomly or otherwise,
 // from this pool of event templates
 CityEventTemplate_t eventTemplates[8] =
 {
+    {2000, 500, MEDICAL, "Minor Medical Event"},
+    {5000, 2500, MEDICAL, "Major Medical Event"},
     {2000, 500, POLICE, "Minor Police Event"},
     {5000, 2500, POLICE, "Major Police Event"},
     {2000, 500, FIRE, "Minor Fire Event"},
     {5000, 2500, FIRE, "Major Fire Event"},
-    {2000, 500, MEDICAL, "Minor Medical Event"},
-    {5000, 2500, MEDICAL, "Major Medical Event"},
     {2024, 2019, COVID, "Covid-19 Isolated Event"},
     {10000, 5000, COVID, "Covid-19 Outbreak Event"},
 };
@@ -123,16 +126,15 @@ int main(void)
 
 CityData_t* InitializeCityData(void)
 {
-    static const uint8_t departmentHandlerCounts[NUM_DEPARTMENTS] = {4, 4, 4, 4};
-    static const uint16_t departmentQueueLengths[NUM_DEPARTMENTS] = {200, 200, 200, 200};
+    static const uint8_t departmentHandlerCounts[NUM_DEPARTMENTS] = {4, 3, 2, 4};
 
     CityData_t *cityData = pvPortMalloc(sizeof(CityData_t));
-    cityData->incomingQueue = xQueueCreate(200, sizeof(CityEvent_t));
+    cityData->incomingQueue = xQueueCreate(INCOMING_QUEUE_LENGTH, sizeof(CityEvent_t));
 
     for (int i = 0; i < NUM_DEPARTMENTS; i++)
     {
         cityData->departments[i].code = i;
-        cityData->departments[i].jobQueue = xQueueCreate(departmentQueueLengths[i], sizeof(CityEvent_t));
+        cityData->departments[i].jobQueue = xQueueCreate(DEPARTMENT_QUEUE_LENGTH, sizeof(CityEvent_t));
         cityData->departments[i].freeHandlers = departmentHandlerCounts[i];
     }
 
@@ -164,7 +166,7 @@ void CentralDispatcherTask(void *param)
 
     for(;;)
     {
-        printf("Central Dispatcher Waiting...\n");
+        printf("Central Dispatcher Awaiting Messages.\n");
         if (xQueueReceive(cityData->incomingQueue, &(handledEvent), portMAX_DELAY))
         {
             printf("Central Dispatcher Routing Event \"%s\" to %s Department.\n", handledEvent.description, departmentNames[handledEvent.code]);
@@ -182,7 +184,7 @@ void DepartmentDispatcherTask(void *param)
 
     for(;;)
     {
-        printf("%s Department Dispatcher Waiting...\n", departmentNames[departmentData->code]);
+        printf("%s Department Dispatcher Awaiting Messages.\n", departmentNames[departmentData->code]);
 
         if (xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY))
         {
