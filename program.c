@@ -18,9 +18,8 @@
 #define NUM_DEPARTMENTS (4)
 
 #define TASK_STACK_SIZE (configMINIMAL_STACK_SIZE)
-#define INCOMING_QUEUE_LENGTH (200)
-#define DEPARTMENT_QUEUE_LENGTH (200)
-#define LOGGER_QUEUE_LENGTH (10000)
+#define INCOMING_QUEUE_LENGTH (256)
+#define DEPARTMENT_QUEUE_LENGTH (256)
 
 #define EVENT_GENERATOR_PRIORITY (50)
 #define LOGGER_PRIORITY (100)
@@ -46,7 +45,7 @@ typedef struct CityDepartment
     DepartmentCode_t code;
     BaseType_t status;
     QueueHandle_t jobQueue;
-    uint8_t freeHandlers;
+    uint8_t availableResources;
 } CityDepartment_t;
 typedef struct CityData
 {
@@ -126,7 +125,7 @@ int main(void)
 
 CityData_t* InitializeCityData(void)
 {
-    static const uint8_t departmentHandlerCounts[NUM_DEPARTMENTS] = {4, 3, 2, 4};
+    static const uint8_t departmentInitialResources[NUM_DEPARTMENTS] = {4, 3, 2, 4};
 
     CityData_t *cityData = pvPortMalloc(sizeof(CityData_t));
     cityData->incomingQueue = xQueueCreate(INCOMING_QUEUE_LENGTH, sizeof(CityEvent_t));
@@ -135,7 +134,7 @@ CityData_t* InitializeCityData(void)
     {
         cityData->departments[i].code = i;
         cityData->departments[i].jobQueue = xQueueCreate(DEPARTMENT_QUEUE_LENGTH, sizeof(CityEvent_t));
-        cityData->departments[i].freeHandlers = departmentHandlerCounts[i];
+        cityData->departments[i].availableResources = departmentInitialResources[i];
     }
 
     return cityData;
@@ -220,7 +219,7 @@ void LoggerTask(void *param)
 }
 void EventGeneratorTask(void *param)
 {
-    vTaskDelay(INITIAL_SLEEP);
+    vTaskDelay(INITIAL_SLEEP*2);
     printf("Event Generator Starting...\n");
 
     QueueHandle_t *incomingQueue = (QueueHandle_t *)param;
