@@ -2,9 +2,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 // RP-2040 libs
-#include "pico/stdio_usb.h"
-#include "pico/printf.h"
 #include "pico/stdlib.h"
+#include "pico/printf.h"
+#include "pico/time.h"
+#include "pico/stdio_usb.h"
 #include "hardware/gpio.h"
 #include "hardware/regs/rosc.h"
 #include "hardware/regs/addressmap.h"
@@ -98,6 +99,7 @@ int main(void)
     gpio_init(28);
     gpio_set_dir(28, true);
     gpio_put(28, false);
+    sleep_ms(1000);
 
     // application data initialization
     CityData_t *cityData = InitializeCityData();
@@ -162,7 +164,7 @@ void CentralDispatcherTask(void *param)
 
     for(;;)
     {
-        printf("Central Dispatcher Waiting...\nQueue Handle: %d\n", cityData->incomingQueue);
+        printf("Central Dispatcher Waiting...\n");
         if (xQueueReceive(cityData->incomingQueue, &(handledEvent), portMAX_DELAY))
         {
             printf("Central Dispatcher Routing Event \"%s\" to %s Department.\n", handledEvent.description, departmentNames[handledEvent.code]);
@@ -233,7 +235,8 @@ void EventGeneratorTask(void *param)
         nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
         gpio_put(28, true);
-        printf("\nEmitting Event: %s\nEstimated handling time: %u ticks\n\nQueue Handle: %d\n", nextEvent->description, nextEvent->ticks, incomingQueue);
+        printf("\nEmitting Event: %s\nEstimated handling time: %u ticks\n\n",
+                nextEvent->description, nextEvent->ticks);
         xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
         gpio_put(28, false);
 
