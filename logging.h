@@ -3,7 +3,7 @@
 
 #define LOG_MAX_LENGTH 64
 
-typedef enum LogFormatId
+typedef const enum LogFormatId
 {
     eLOG_DISPATCHER_STARTING,
     eLOG_DISPATCHER_WAITING,
@@ -25,7 +25,7 @@ typedef enum LogFormatId
     eLOG_LOGGER_STARTING,
 } LogFormatId_t;
 
-char logFormats[14][LOG_MAX_LENGTH] =
+const char logFormats[14][LOG_MAX_LENGTH] =
 {
     "Central Dispatcher Starting...\n",
     "Central Dispatcher Awaiting Messages.\n",

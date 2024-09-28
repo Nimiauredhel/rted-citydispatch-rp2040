@@ -18,6 +18,7 @@
 // Application headers
 #include "logging.h"
 
+// *** Definitions ***
 #define NUM_DEPARTMENTS (4)
 
 #define TASK_STACK_SIZE (configMINIMAL_STACK_SIZE)
@@ -36,7 +37,7 @@
 #define LOGGER_SLEEP (pdMS_TO_TICKS(1000))
 
 // *** Types ***
-typedef enum DepartmentCode_t
+typedef enum DepartmentCode
 {
     MEDICAL = 0,
     POLICE = 1,
@@ -49,19 +50,19 @@ typedef struct CityEvent
     DepartmentCode_t code;
     char *description;
 } CityEvent_t;
-typedef struct CityDepartmentHandlerState
+typedef struct CityDepartmentAgentState
 {
     bool busy;
     char name[16];
     CityEvent_t currentEvent;
-} CityDepartmentHandlerState_t;
+} CityDepartmentAgentState_t;
 typedef struct CityDepartment
 {
     DepartmentCode_t code;
     BaseType_t status;
     QueueHandle_t jobQueue;
-    uint8_t handlerCount;
-    CityDepartmentHandlerState_t *handlerStates;
+    uint8_t agentCount;
+    CityDepartmentAgentState_t *agentStates;
 } CityDepartment_t;
 typedef struct CityData
 {
@@ -77,11 +78,12 @@ typedef struct CityEventTemplate
     char *description;
 } CityEventTemplate_t;
 
-// *** Global Constants
+// *** Global Constants ***
 const char departmentNames[NUM_DEPARTMENTS][10] = {"Medical\0", "Police\0", "Fire\0", "Covid-19\0"};
+const uint8_t departmentAgentCounts[NUM_DEPARTMENTS] = {4, 3, 2, 4};
 // Events will be generated, randomly or otherwise,
 // from this pool of event templates
-CityEventTemplate_t eventTemplates[8] =
+const CityEventTemplate_t eventTemplates[8] =
 {
     {pdMS_TO_TICKS(2000),  pdMS_TO_TICKS(5000),  MEDICAL, "Minor Medical"},
     {pdMS_TO_TICKS(6000),  pdMS_TO_TICKS(12000), MEDICAL, "Major Medical"},
@@ -99,8 +101,8 @@ CityData_t* InitializeCityData(void);
 void InitializeCityTasks(CityData_t *cityData);
 void InitializeHelperTasks(CityData_t *cityData);
 void CentralDispatcherTask(void *param);
-void DepartmentDispatcherTask(void *param);
-void DepartmentHandlerTask(void *param);
+void DepartmentManagerTask(void *param);
+void DepartmentAgentTask(void *param);
 void LoggerTask(void *param);
 void EventGeneratorTask(void *param);
 uint32_t RandomNumber(void);
@@ -138,8 +140,6 @@ void InitializeHardware(void)
 
 CityData_t* InitializeCityData(void)
 {
-    static const uint8_t departmentInitialResources[NUM_DEPARTMENTS] = {4, 3, 2, 4};
-
     CityData_t *cityData = pvPortMalloc(sizeof(CityData_t));
     cityData->incomingQueue = xQueueCreate(INCOMING_QUEUE_LENGTH, sizeof(CityEvent_t));
 
@@ -147,14 +147,14 @@ CityData_t* InitializeCityData(void)
     {
         cityData->departments[i].code = i;
         cityData->departments[i].jobQueue = xQueueCreate(DEPARTMENT_QUEUE_LENGTH, sizeof(CityEvent_t));
-        cityData->departments[i].handlerCount = departmentInitialResources[i];
-        cityData->departments[i].handlerStates = pvPortMalloc(sizeof(CityDepartmentHandlerState_t)
-                * departmentInitialResources[i]);
+        cityData->departments[i].agentCount = departmentAgentCounts[i];
+        cityData->departments[i].agentStates = pvPortMalloc(sizeof(CityDepartmentAgentState_t)
+                * departmentAgentCounts[i]);
                 
-        for (int j = 0; j < departmentInitialResources[i]; j++)
+        for (int j = 0; j < departmentAgentCounts[i]; j++)
         {
-            cityData->departments[i].handlerStates[j].busy = false;
-            sprintf(cityData->departments[i].handlerStates[j].name, "%s-%u", departmentNames[i], j+1);
+            cityData->departments[i].agentStates[j].busy = false;
+            sprintf(cityData->departments[i].agentStates[j].name, "%s-%u", departmentNames[i], j+1);
         }
     }
 
@@ -171,7 +171,7 @@ void InitializeCityTasks(CityData_t *cityData)
     for (int i = 0; i < NUM_DEPARTMENTS; i++)
     {
             cityData->departments[i].status = xTaskCreate(
-            DepartmentDispatcherTask,
+            DepartmentManagerTask,
             departmentNames[cityData->departments[i].code], TASK_STACK_SIZE,
             &(cityData->departments[i]), DEPARTMENT_DISPATCHER_PRIORITY, NULL);
     }
@@ -202,17 +202,17 @@ void CentralDispatcherTask(void *param)
         }
     }
 }
-void DepartmentDispatcherTask(void *param)
+void DepartmentManagerTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
     CityDepartment_t *departmentData = (CityDepartment_t *)param;
     CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
     printf(logFormats[eLOG_DISPATCHER_ROUTING], departmentNames[departmentData->code]);
 
-    for (int i = 0; i < departmentData->handlerCount; i++)
+    for (int i = 0; i < departmentData->agentCount; i++)
     {
-        xTaskCreate(DepartmentHandlerTask, handledEvent->description, TASK_STACK_SIZE,
-        &(departmentData->handlerStates[i]), DEPARTMENT_HANDLER_PRIORITY, NULL);
+        xTaskCreate(DepartmentAgentTask, handledEvent->description, TASK_STACK_SIZE,
+        &(departmentData->agentStates[i]), DEPARTMENT_HANDLER_PRIORITY, NULL);
     }
 
     for(;;)
@@ -226,12 +226,12 @@ void DepartmentDispatcherTask(void *param)
 
             do
             {
-                for (int i = 0; i < departmentData->handlerCount; i++)
+                for (int i = 0; i < departmentData->agentCount; i++)
                 {
-                    if (!(departmentData->handlerStates[i].busy))
+                    if (!(departmentData->agentStates[i].busy))
                     {
-                        departmentData->handlerStates[i].currentEvent = *handledEvent;
-                        departmentData->handlerStates[i].busy = true;
+                        departmentData->agentStates[i].currentEvent = *handledEvent;
+                        departmentData->agentStates[i].busy = true;
                         assigned = true;
                         break;
                     }
@@ -240,25 +240,24 @@ void DepartmentDispatcherTask(void *param)
         }
     }
 }
-void DepartmentHandlerTask(void *param)
+void DepartmentAgentTask(void *param)
 {
-    // handle event here
-    CityDepartmentHandlerState_t *handlerState = (CityDepartmentHandlerState_t *)param;
-    printf(logFormats[eLOG_UNIT_INITIALIZED], handlerState->name);
+    CityDepartmentAgentState_t *agentState = (CityDepartmentAgentState_t *)param;
+    printf(logFormats[eLOG_UNIT_INITIALIZED], agentState->name);
 
     for(;;)
     {
-        printf(logFormats[eLOG_UNIT_AWAITING], handlerState->name);
+        printf(logFormats[eLOG_UNIT_AWAITING], agentState->name);
 
-        while(!handlerState->busy)
+        while(!agentState->busy)
         {
             vTaskDelay(1);
         }
 
-        printf(logFormats[eLOG_UNIT_HANDLING], handlerState->name, handlerState->currentEvent.description);
-        vTaskDelay(handlerState->currentEvent.ticks);
-        handlerState->busy = false;
-        printf(logFormats[eLOG_UNIT_FINISHED], handlerState->name, handlerState->currentEvent.description);
+        printf(logFormats[eLOG_UNIT_HANDLING], agentState->name, agentState->currentEvent.description);
+        vTaskDelay(agentState->currentEvent.ticks);
+        agentState->busy = false;
+        printf(logFormats[eLOG_UNIT_FINISHED], agentState->name, agentState->currentEvent.description);
     }
 }
 void LoggerTask(void *param)
