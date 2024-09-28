@@ -28,10 +28,10 @@
 #define DEPARTMENT_DISPATCHER_PRIORITY (200)
 #define DEPARTMENT_HANDLER_PRIORITY (250)
 
-#define INITIAL_SLEEP (1500)
-#define EVENT_GENERATOR_SLEEP_MAX (2000)
-#define EVENT_GENERATOR_SLEEP_MIN (500)
-#define LOGGER_SLEEP (1000)
+#define INITIAL_SLEEP (pdMS_TO_TICKS(1500))
+#define EVENT_GENERATOR_SLEEP_MAX (pdMS_TO_TICKS(2000))
+#define EVENT_GENERATOR_SLEEP_MIN (pdMS_TO_TICKS(500))
+#define LOGGER_SLEEP (pdMS_TO_TICKS(1000))
 
 // *** Types ***
 typedef enum DepartmentCode_t
@@ -245,7 +245,7 @@ void DepartmentHandlerTask(void *param)
         printf("Unit %s Began Handling Event \"%s\"\n", handlerState->name, handlerState->currentEvent.description);
         vTaskDelay(handlerState->currentEvent.ticks);
         handlerState->busy = false;
-        printf("Unit %s Finished Handling Event \"%s\"\n", handlerState->name, handlerState->currentEvent.description);
+        printf("\nUnit %s Finished Handling Event \"%s\"\n\n", handlerState->name, handlerState->currentEvent.description);
     }
 }
 void LoggerTask(void *param)
@@ -276,8 +276,8 @@ void EventGeneratorTask(void *param)
         nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
         gpio_put(28, true);
-        printf("\nEmitting Event: %s\nEstimated handling time: %u ticks\n\n",
-                nextEvent->description, nextEvent->ticks);
+        printf("\nEmitting Event: %s\nEstimated handling time: %ums\n\n",
+                nextEvent->description, pdTICKS_TO_MS(nextEvent->ticks));
         xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
         gpio_put(28, false);
 
