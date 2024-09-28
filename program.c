@@ -92,8 +92,10 @@ CityEventTemplate_t eventTemplates[8] =
 };
 
 // *** Function Declarations ***
+void InitializeHardware(void);
 CityData_t* InitializeCityData(void);
 void InitializeCityTasks(CityData_t *cityData);
+void InitializeHelperTasks(CityData_t *cityData);
 void CentralDispatcherTask(void *param);
 void DepartmentDispatcherTask(void *param);
 void DepartmentHandlerTask(void *param);
@@ -105,10 +107,7 @@ uint32_t RandomNumber(void);
 int main(void)
 {
     // hardware specific initialization
-    stdio_init_all();
-    gpio_init(28);
-    gpio_set_dir(28, true);
-    gpio_put(28, false);
+    InitializeHardware();
     sleep_ms(1000);
 
     // application data initialization
@@ -116,11 +115,7 @@ int main(void)
 
     // initial tasks creation
     InitializeCityTasks(cityData);
-
-    xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
-            NULL, LOGGER_PRIORITY, NULL);
-    xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
-            &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, NULL);
+    InitializeHelperTasks(cityData);
 
     // begin execution
     vTaskStartScheduler();
@@ -129,6 +124,14 @@ int main(void)
     {
         // should never get here
     }
+}
+
+void InitializeHardware(void)
+{
+    stdio_init_all();
+    gpio_init(28);
+    gpio_set_dir(28, true);
+    gpio_put(28, false);
 }
 
 CityData_t* InitializeCityData(void)
@@ -170,6 +173,14 @@ void InitializeCityTasks(CityData_t *cityData)
             departmentNames[cityData->departments[i].code], TASK_STACK_SIZE,
             &(cityData->departments[i]), DEPARTMENT_DISPATCHER_PRIORITY, NULL);
     }
+}
+
+void InitializeHelperTasks(CityData_t *cityData)
+{
+    xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
+            NULL, LOGGER_PRIORITY, NULL);
+    xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
+            &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, NULL);
 }
 
 void CentralDispatcherTask(void *param)
