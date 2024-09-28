@@ -15,6 +15,8 @@
 #include "FreeRTOSConfig.h"
 #include "task.h"
 #include "queue.h"
+// Application headers
+#include "logging.h"
 
 #define NUM_DEPARTMENTS (4)
 
@@ -29,8 +31,8 @@
 #define DEPARTMENT_HANDLER_PRIORITY (250)
 
 #define INITIAL_SLEEP (pdMS_TO_TICKS(1500))
-#define EVENT_GENERATOR_SLEEP_MAX (pdMS_TO_TICKS(2000))
-#define EVENT_GENERATOR_SLEEP_MIN (pdMS_TO_TICKS(500))
+#define EVENT_GENERATOR_SLEEP_MAX (pdMS_TO_TICKS(6000))
+#define EVENT_GENERATOR_SLEEP_MIN (pdMS_TO_TICKS(2000))
 #define LOGGER_SLEEP (pdMS_TO_TICKS(1000))
 
 // *** Types ***
@@ -69,8 +71,8 @@ typedef struct CityData
 } CityData_t;
 typedef struct CityEventTemplate
 {
-    TickType_t maxTicks;
     TickType_t minTicks;
+    TickType_t maxTicks;
     DepartmentCode_t code;
     char *description;
 } CityEventTemplate_t;
@@ -81,14 +83,14 @@ const char departmentNames[NUM_DEPARTMENTS][10] = {"Medical\0", "Police\0", "Fir
 // from this pool of event templates
 CityEventTemplate_t eventTemplates[8] =
 {
-    {2500, 1000, MEDICAL, "Minor Medical Event"},
-    {6000, 3000, MEDICAL, "Major Medical Event"},
-    {2000, 1000, POLICE, "Minor Criminal Event"},
-    {5400, 2500, POLICE, "Major Criminal Event"},
-    {2000, 500, FIRE, "Minor Fire Event"},
-    {8000, 3000, FIRE, "Major Fire Event"},
-    {2024, 2019, COVID, "Covid-19 Isolated Event"},
-    {10000, 5000, COVID, "Covid-19 Outbreak Event"},
+    {pdMS_TO_TICKS(2000),  pdMS_TO_TICKS(5000),  MEDICAL, "Minor Medical"},
+    {pdMS_TO_TICKS(6000),  pdMS_TO_TICKS(12000), MEDICAL, "Major Medical"},
+    {pdMS_TO_TICKS(2000),  pdMS_TO_TICKS(4000),  POLICE,  "Minor Criminal"},
+    {pdMS_TO_TICKS(5000),  pdMS_TO_TICKS(10000), POLICE,  "Major Criminal"},
+    {pdMS_TO_TICKS(1000),  pdMS_TO_TICKS(4000),  FIRE,    "Minor Fire"},
+    {pdMS_TO_TICKS(6000),  pdMS_TO_TICKS(16000), FIRE,    "Major Fire"},
+    {pdMS_TO_TICKS(4000),  pdMS_TO_TICKS(6000),  COVID,   "Covid-19 Isolated"},
+    {pdMS_TO_TICKS(10000), pdMS_TO_TICKS(10000), COVID,   "Covid-19 Outbreak"},
 };
 
 // *** Function Declarations ***
@@ -188,14 +190,14 @@ void CentralDispatcherTask(void *param)
     vTaskDelay(INITIAL_SLEEP);
     CityData_t *cityData = (CityData_t *)param;
     CityEvent_t handledEvent;
-    printf("Central Dispatcher Starting...\n");
+    printf(logFormats[eLOG_DISPATCHER_WAITING]);
 
     for(;;)
     {
-        printf("Central Dispatcher Awaiting Messages.\n");
+        printf(logFormats[eLOG_DISPATCHER_WAITING]);
         if (xQueueReceive(cityData->incomingQueue, &(handledEvent), portMAX_DELAY))
         {
-            printf("Central Dispatcher Routing Event \"%s\" to %s Department.\n", handledEvent.description, departmentNames[handledEvent.code]);
+            printf(logFormats[eLOG_DISPATCHER_ROUTING], handledEvent.description, departmentNames[handledEvent.code]);
             xQueueSend(cityData->departments[handledEvent.code].jobQueue, &(handledEvent), portMAX_DELAY);
         }
     }
@@ -205,7 +207,7 @@ void DepartmentDispatcherTask(void *param)
     vTaskDelay(INITIAL_SLEEP);
     CityDepartment_t *departmentData = (CityDepartment_t *)param;
     CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
-    printf("%s Department Dispatcher Initializing Handlers.\n", departmentNames[departmentData->code]);
+    printf(logFormats[eLOG_DISPATCHER_ROUTING], departmentNames[departmentData->code]);
 
     for (int i = 0; i < departmentData->handlerCount; i++)
     {
@@ -215,11 +217,11 @@ void DepartmentDispatcherTask(void *param)
 
     for(;;)
     {
-        printf("%s Department Dispatcher Awaiting Messages.\n", departmentNames[departmentData->code]);
+        printf(logFormats[eLOG_MANAGER_WAITING], departmentNames[departmentData->code]);
 
         if (xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY))
         {
-            printf("%s Department Dispatcher Assigning Event \"%s\"\n", departmentNames[departmentData->code], handledEvent->description);
+            printf(logFormats[eLOG_MANAGER_ASSIGNING_EVENT], departmentNames[departmentData->code], handledEvent->description);
             bool assigned = false;
 
             do
@@ -242,27 +244,27 @@ void DepartmentHandlerTask(void *param)
 {
     // handle event here
     CityDepartmentHandlerState_t *handlerState = (CityDepartmentHandlerState_t *)param;
-    printf("Unit %s Initialized.\n", handlerState->name);
+    printf(logFormats[eLOG_UNIT_INITIALIZED], handlerState->name);
 
     for(;;)
     {
-        printf("Unit %s Awaiting Instructions.\n", handlerState->name);
+        printf(logFormats[eLOG_UNIT_AWAITING], handlerState->name);
 
         while(!handlerState->busy)
         {
             vTaskDelay(1);
         }
 
-        printf("Unit %s Began Handling Event \"%s\"\n", handlerState->name, handlerState->currentEvent.description);
+        printf(logFormats[eLOG_UNIT_HANDLING], handlerState->name, handlerState->currentEvent.description);
         vTaskDelay(handlerState->currentEvent.ticks);
         handlerState->busy = false;
-        printf("\nUnit %s Finished Handling Event \"%s\"\n\n", handlerState->name, handlerState->currentEvent.description);
+        printf(logFormats[eLOG_UNIT_FINISHED], handlerState->name, handlerState->currentEvent.description);
     }
 }
 void LoggerTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
-    printf("Logger Starting...\n");
+    printf(logFormats[eLOG_LOGGER_STARTING]);
 
     for(;;)
     {
@@ -272,7 +274,7 @@ void LoggerTask(void *param)
 void EventGeneratorTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP*2);
-    printf("Event Generator Starting...\n");
+    printf(logFormats[eLOG_GENERATOR_STARTING]);
 
     QueueHandle_t *incomingQueue = (QueueHandle_t *)param;
     uint32_t nextSleep;
@@ -287,7 +289,7 @@ void EventGeneratorTask(void *param)
         nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
         gpio_put(28, true);
-        printf("\nEmitting Event: %s\nEstimated handling time: %ums\n\n",
+        printf(logFormats[eLOG_GENERATOR_EMITTING],
                 nextEvent->description, pdTICKS_TO_MS(nextEvent->ticks));
         xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
         gpio_put(28, false);
