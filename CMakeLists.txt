@@ -15,6 +15,7 @@ pico_sdk_init()
 
 add_executable(program
     program.c
+    logging.c
 )
 
 FILE(GLOB FreeRTOS_src FreeRTOS-Kernel/*.c)
@@ -38,6 +39,7 @@ target_link_libraries( program
     pico_stdio_usb
     pico_time
     hardware_gpio
+    hardware_rtc
     FreeRTOS
 )
 

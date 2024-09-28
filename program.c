@@ -1,13 +1,13 @@
 // C libs
 #include <stdlib.h>
 #include <stdint.h>
-#include <stdio.h>
 // RP-2040 libs
 #include "pico/stdlib.h"
 #include "pico/printf.h"
 #include "pico/time.h"
 #include "pico/stdio_usb.h"
 #include "hardware/gpio.h"
+#include "hardware/rtc.h"
 #include "hardware/regs/rosc.h"
 #include "hardware/regs/addressmap.h"
 // FreeRTOS libs
@@ -95,19 +95,25 @@ const CityEventTemplate_t eventTemplates[8] =
     {pdMS_TO_TICKS(10000), pdMS_TO_TICKS(10000), COVID,   "Covid-19 Outbreak"},
 };
 
+// *** Global Variables ***
+TaskHandle_t eventGeneratorHandle;
+uint32_t gpioBounceTable[4] = {0};
+
 // *** Function Declarations ***
 void InitializeHardware(void);
 CityData_t* InitializeCityData(void);
 void InitializeCityTasks(CityData_t *cityData);
 void InitializeHelperTasks(CityData_t *cityData);
+uint32_t RandomNumber(void);
+void onGpioRise(uint gpio, uint32_t events);
+// *** Task Declarations ***
 void CentralDispatcherTask(void *param);
 void DepartmentManagerTask(void *param);
 void DepartmentAgentTask(void *param);
 void LoggerTask(void *param);
 void EventGeneratorTask(void *param);
-uint32_t RandomNumber(void);
 
-// *** Function Implementations ***
+// *** Function Definitions ***
 int main(void)
 {
     // hardware specific initialization
@@ -132,10 +138,14 @@ int main(void)
 
 void InitializeHardware(void)
 {
+    rtc_init();
     stdio_init_all();
+    gpio_init(2);
     gpio_init(28);
+    gpio_set_dir(2, false);
     gpio_set_dir(28, true);
     gpio_put(28, false);
+    gpio_set_irq_enabled_with_callback(2, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
 }
 
 CityData_t* InitializeCityData(void)
@@ -177,36 +187,75 @@ void InitializeCityTasks(CityData_t *cityData)
     }
 }
 
+void GenerateRandomEvent(void)
+{
+
+}
+
 void InitializeHelperTasks(CityData_t *cityData)
 {
     xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
             NULL, LOGGER_PRIORITY, NULL);
     xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
-            &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, NULL);
+            &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, &eventGeneratorHandle);
 }
 
+uint32_t RandomNumber(void)
+{
+    int k = 0;
+    int random=0;
+    volatile uint32_t *rnd_reg=(uint32_t *)(ROSC_BASE + ROSC_RANDOMBIT_OFFSET);
+    
+    for(k=0;k<32;k++)
+    {
+        random = random << 1;
+        random=random + (0x00000001 & (*rnd_reg));
+    }
+
+    return random;
+}
+
+void onGpioRise(uint gpio, uint32_t events)
+{
+    static uint32_t cooldown = 300;
+    uint32_t currentMs = to_ms_since_boot(get_absolute_time());
+    if (currentMs - gpioBounceTable[gpio] < cooldown) return;
+    gpioBounceTable[gpio] = currentMs;
+    xTaskResumeFromISR(eventGeneratorHandle);
+}
+
+// *** Task Definitions ***
 void CentralDispatcherTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
     CityData_t *cityData = (CityData_t *)param;
     CityEvent_t handledEvent;
+
+    print_timestamp();
     printf(logFormats[eLOG_DISPATCHER_WAITING]);
 
     for(;;)
     {
+        print_timestamp();
         printf(logFormats[eLOG_DISPATCHER_WAITING]);
+
         if (xQueueReceive(cityData->incomingQueue, &(handledEvent), portMAX_DELAY))
         {
+            print_timestamp();
             printf(logFormats[eLOG_DISPATCHER_ROUTING], handledEvent.description, departmentNames[handledEvent.code]);
+
             xQueueSend(cityData->departments[handledEvent.code].jobQueue, &(handledEvent), portMAX_DELAY);
         }
     }
 }
+
 void DepartmentManagerTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
     CityDepartment_t *departmentData = (CityDepartment_t *)param;
     CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
+
+    print_timestamp();
     printf(logFormats[eLOG_DISPATCHER_ROUTING], departmentNames[departmentData->code]);
 
     for (int i = 0; i < departmentData->agentCount; i++)
@@ -217,11 +266,14 @@ void DepartmentManagerTask(void *param)
 
     for(;;)
     {
+        print_timestamp();
         printf(logFormats[eLOG_MANAGER_WAITING], departmentNames[departmentData->code]);
 
         if (xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY))
         {
+            print_timestamp();
             printf(logFormats[eLOG_MANAGER_ASSIGNING_EVENT], departmentNames[departmentData->code], handledEvent->description);
+
             bool assigned = false;
 
             do
@@ -243,10 +295,13 @@ void DepartmentManagerTask(void *param)
 void DepartmentAgentTask(void *param)
 {
     CityDepartmentAgentState_t *agentState = (CityDepartmentAgentState_t *)param;
+
+    print_timestamp();
     printf(logFormats[eLOG_UNIT_INITIALIZED], agentState->name);
 
     for(;;)
     {
+        print_timestamp();
         printf(logFormats[eLOG_UNIT_AWAITING], agentState->name);
 
         while(!agentState->busy)
@@ -254,15 +309,21 @@ void DepartmentAgentTask(void *param)
             vTaskDelay(1);
         }
 
+        print_timestamp();
         printf(logFormats[eLOG_UNIT_HANDLING], agentState->name, agentState->currentEvent.description);
+
         vTaskDelay(agentState->currentEvent.ticks);
         agentState->busy = false;
+
+        print_timestamp();
         printf(logFormats[eLOG_UNIT_FINISHED], agentState->name, agentState->currentEvent.description);
     }
 }
 void LoggerTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
+
+    print_timestamp();
     printf(logFormats[eLOG_LOGGER_STARTING]);
 
     for(;;)
@@ -272,7 +333,9 @@ void LoggerTask(void *param)
 }
 void EventGeneratorTask(void *param)
 {
-    vTaskDelay(INITIAL_SLEEP*2);
+    vTaskDelay(INITIAL_SLEEP);
+
+    print_timestamp();
     printf(logFormats[eLOG_GENERATOR_STARTING]);
 
     QueueHandle_t *incomingQueue = (QueueHandle_t *)param;
@@ -282,33 +345,27 @@ void EventGeneratorTask(void *param)
 
     for(;;)
     {
+        print_timestamp();
+        printf(logFormats[eLOG_GENERATOR_AWAITING]);
+
+        vTaskSuspend(NULL);
+
         nextEventTemplate = RandomNumber()%8;
         nextEvent->code = eventTemplates[nextEventTemplate].code;
         nextEvent->description = eventTemplates[nextEventTemplate].description;
         nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
         gpio_put(28, true);
+
+        print_timestamp();
         printf(logFormats[eLOG_GENERATOR_EMITTING],
+
                 nextEvent->description, pdTICKS_TO_MS(nextEvent->ticks));
         xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
         gpio_put(28, false);
 
-        nextSleep = EVENT_GENERATOR_SLEEP_MIN
-            + (RandomNumber()%(EVENT_GENERATOR_SLEEP_MAX-EVENT_GENERATOR_SLEEP_MIN));
-        vTaskDelay(nextSleep);
+        //nextSleep = EVENT_GENERATOR_SLEEP_MIN
+        //    + (RandomNumber()%(EVENT_GENERATOR_SLEEP_MAX-EVENT_GENERATOR_SLEEP_MIN));
+        //vTaskDelay(nextSleep);
     }
-}
-uint32_t RandomNumber(void)
-{
-    int k = 0;
-    int random=0;
-    volatile uint32_t *rnd_reg=(uint32_t *)(ROSC_BASE + ROSC_RANDOMBIT_OFFSET);
-    
-    for(k=0;k<32;k++)
-    {
-        random = random << 1;
-        random=random + (0x00000001 & (*rnd_reg));
-    }
-
-    return random;
 }

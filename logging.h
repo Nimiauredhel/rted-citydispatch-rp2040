@@ -1,6 +1,10 @@
 #ifndef LOGGING_H
 #define LOGGING_H
 
+#include "pico/printf.h"
+#include "pico/util/datetime.h"
+#include "hardware/rtc.h"
+
 #define LOG_MAX_LENGTH 64
 
 typedef const enum LogFormatId
@@ -20,31 +24,14 @@ typedef const enum LogFormatId
     eLOG_UNIT_FINISHED,
 
     eLOG_GENERATOR_STARTING,
+    eLOG_GENERATOR_AWAITING,
     eLOG_GENERATOR_EMITTING,
 
     eLOG_LOGGER_STARTING,
 } LogFormatId_t;
 
-const char logFormats[14][LOG_MAX_LENGTH] =
-{
-    "Central Dispatcher Starting...\n",
-    "Central Dispatcher Awaiting Messages.\n",
-    "Central Dispatcher Routing \"%s Event\" to %s Department.\n",
+extern const char logFormats[15][LOG_MAX_LENGTH];
 
-    "%s Department Manager Starting...\n",
-    "%s Department Manager Initializing %u Agents.\n",
-    "%s Department Manager Awaiting Messages.\n",
-    "%s Department Manager Assigning \"%s Event\".\n",
-
-    "Unit %s Initialized.\n",
-    "Unit %s Awaiting Instructions.\n",
-    "Unit %s Handling \"%s Event\".\n",
-    "Unit %s Finished Handling \"%s Event\".\n",
-
-    "Event Generator Starting..\n",
-    "Emitting \"%s Event\", Estimated Handling Time: %ums.\n",
-
-    "Logger Starting...\n",
-};
+void print_timestamp();
 
 #endif
