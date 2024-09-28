@@ -25,11 +25,11 @@
 #define INCOMING_QUEUE_LENGTH (256)
 #define DEPARTMENT_QUEUE_LENGTH (256)
 
-#define EVENT_GENERATOR_PRIORITY (50)
-#define LOGGER_PRIORITY (100)
-#define CENTRAL_DISPATCHER_PRIORITY (150)
-#define DEPARTMENT_DISPATCHER_PRIORITY (200)
-#define DEPARTMENT_HANDLER_PRIORITY (250)
+#define LOGGER_PRIORITY (50)
+#define CENTRAL_DISPATCHER_PRIORITY (100)
+#define DEPARTMENT_DISPATCHER_PRIORITY (150)
+#define DEPARTMENT_HANDLER_PRIORITY (200)
+#define EVENT_GENERATOR_PRIORITY (250)
 
 #define INITIAL_SLEEP (pdMS_TO_TICKS(1500))
 #define EVENT_GENERATOR_SLEEP_MAX (pdMS_TO_TICKS(6000))
@@ -288,6 +288,9 @@ void DepartmentManagerTask(void *param)
                         break;
                     }
                 }
+
+                vTaskDelay(10);
+
             } while(!assigned);
         }
     }
@@ -321,6 +324,7 @@ void DepartmentAgentTask(void *param)
 }
 void LoggerTask(void *param)
 {
+    //TODO: actually implement the logger in a meaningful way
     vTaskDelay(INITIAL_SLEEP);
 
     print_timestamp();
