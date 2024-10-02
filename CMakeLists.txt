@@ -39,6 +39,7 @@ target_link_libraries( program
     pico_stdio_usb
     pico_time
     hardware_gpio
+    hardware_pwm
     hardware_rtc
     FreeRTOS
 )

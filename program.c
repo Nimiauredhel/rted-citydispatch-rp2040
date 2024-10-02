@@ -7,6 +7,7 @@
 #include "pico/time.h"
 #include "pico/stdio_usb.h"
 #include "hardware/gpio.h"
+#include "hardware/pwm.h"
 #include "hardware/rtc.h"
 #include "hardware/regs/rosc.h"
 #include "hardware/regs/addressmap.h"
@@ -79,8 +80,14 @@ typedef struct CityEventTemplate
 } CityEventTemplate_t;
 
 // *** Global Constants ***
+//
+// a "debouncing" cooldown for the event generation
+// and its related gpio functions
+const uint32_t buttonCooldownMs = 200;
+
 const char departmentNames[NUM_DEPARTMENTS][10] = {"Medical\0", "Police\0", "Fire\0", "Covid-19\0"};
 const uint8_t departmentAgentCounts[NUM_DEPARTMENTS] = {4, 3, 2, 4};
+
 // Events will be generated, randomly or otherwise,
 // from this pool of event templates
 const CityEventTemplate_t eventTemplates[8] =
@@ -96,8 +103,19 @@ const CityEventTemplate_t eventTemplates[8] =
 };
 
 // *** Global Variables ***
+
+// handle of the event generation task,
+// only exposed here to allow it
+// to be suspended/resumed via ISR
 TaskHandle_t eventGeneratorHandle;
+
+// tracking time since last gpio HIGH
+// to enforce cooldown & debouncing
 uint32_t gpioBounceTable[4] = {0};
+
+// a counter of pending/ongoing events
+// for user feedback (in this case, LED brightness)
+uint8_t eventBacklog = 0;
 
 // *** Function Declarations ***
 void InitializeHardware(void);
@@ -140,12 +158,19 @@ void InitializeHardware(void)
 {
     rtc_init();
     stdio_init_all();
+
     gpio_init(2);
     gpio_init(28);
     gpio_set_dir(2, false);
     gpio_set_dir(28, true);
     gpio_put(28, false);
     gpio_set_irq_enabled_with_callback(2, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
+
+    gpio_set_function(26, GPIO_FUNC_PWM);
+    gpio_set_function(27, GPIO_FUNC_PWM);
+    pwm_set_enabled(5, true);
+    pwm_set_wrap(5, 1024);
+    pwm_set_both_levels(5, 0, 0);
 }
 
 CityData_t* InitializeCityData(void)
@@ -215,16 +240,25 @@ uint32_t RandomNumber(void)
     return random;
 }
 
+// ISR when a gpio input is set HIGH
 void onGpioRise(uint gpio, uint32_t events)
 {
-    static uint32_t cooldown = 300;
     uint32_t currentMs = to_ms_since_boot(get_absolute_time());
-    if (currentMs - gpioBounceTable[gpio] < cooldown) return;
+    if (currentMs - gpioBounceTable[gpio] < buttonCooldownMs) return;
     gpioBounceTable[gpio] = currentMs;
+
+    // TODO: if using other gpio interrupts in the future,
+    // this will become a switch case
+    // switch (gpio) {
+    // case 28:
+    // etc...
     xTaskResumeFromISR(eventGeneratorHandle);
 }
 
 // *** Task Definitions ***
+
+// the central dispatcher reads events from the incoming events queue,
+// and forwards them to the appropriate department queue
 void CentralDispatcherTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
@@ -245,10 +279,14 @@ void CentralDispatcherTask(void *param)
             printf(logFormats[eLOG_DISPATCHER_ROUTING], handledEvent.description, departmentNames[handledEvent.code]);
 
             xQueueSend(cityData->departments[handledEvent.code].jobQueue, &(handledEvent), portMAX_DELAY);
+            eventBacklog++;
         }
     }
 }
 
+// the department manager reads events from the department job queue,
+// and forwards them to a free agent if available. if no agent
+// is available, the manager waits until one is freed up.
 void DepartmentManagerTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
@@ -295,6 +333,9 @@ void DepartmentManagerTask(void *param)
         }
     }
 }
+
+// the department agent waits to be assigned a task by its manager.
+// it then waits for (task) milliseconds before reporting the task complete.
 void DepartmentAgentTask(void *param)
 {
     CityDepartmentAgentState_t *agentState = (CityDepartmentAgentState_t *)param;
@@ -320,8 +361,13 @@ void DepartmentAgentTask(void *param)
 
         print_timestamp();
         printf(logFormats[eLOG_UNIT_FINISHED], agentState->name, agentState->currentEvent.description);
+        eventBacklog--;
     }
 }
+
+// the logger doesn't do a lot yet,
+// but it's generally responsible
+// for logging and user feedback
 void LoggerTask(void *param)
 {
     //TODO: actually implement the logger in a meaningful way
@@ -333,8 +379,14 @@ void LoggerTask(void *param)
     for(;;)
     {
         vTaskDelay(LOGGER_SLEEP);
+        uint16_t level = 256/(1+(eventBacklog*4));
+        pwm_set_both_levels(5, level, level);
     }
 }
+
+// the event generator creates a new event
+// randomly from the preset event templates,
+// and adds it to the incoming event queue
 void EventGeneratorTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
@@ -352,24 +404,25 @@ void EventGeneratorTask(void *param)
         print_timestamp();
         printf(logFormats[eLOG_GENERATOR_AWAITING]);
 
+        gpio_put(28, true);
         vTaskSuspend(NULL);
+        gpio_put(28, false);
 
         nextEventTemplate = RandomNumber()%8;
         nextEvent->code = eventTemplates[nextEventTemplate].code;
         nextEvent->description = eventTemplates[nextEventTemplate].description;
         nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
-        gpio_put(28, true);
 
         print_timestamp();
         printf(logFormats[eLOG_GENERATOR_EMITTING],
 
                 nextEvent->description, pdTICKS_TO_MS(nextEvent->ticks));
         xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
-        gpio_put(28, false);
 
         //nextSleep = EVENT_GENERATOR_SLEEP_MIN
         //    + (RandomNumber()%(EVENT_GENERATOR_SLEEP_MAX-EVENT_GENERATOR_SLEEP_MIN));
         //vTaskDelay(nextSleep);
+        vTaskDelay(pdMS_TO_TICKS(buttonCooldownMs));
     }
 }
