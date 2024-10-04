@@ -37,6 +37,12 @@
 #define EVENT_GENERATOR_SLEEP_MIN (pdMS_TO_TICKS(2000))
 #define LOGGER_SLEEP (pdMS_TO_TICKS(1000))
 
+#define PIN_EVENT_GEN 2
+#define PIN_PRINT_LOG 4
+#define PIN_PRINT_ENABLE 6
+#define PIN_PRINT_STATUS 8
+#define PIN_EVENT_READY 28
+
 // *** Types ***
 typedef enum DepartmentCode
 {
@@ -122,6 +128,7 @@ void InitializeHardware(void);
 CityData_t* InitializeCityData(void);
 void InitializeCityTasks(CityData_t *cityData);
 void InitializeHelperTasks(CityData_t *cityData);
+void PrintStatus(CityData_t *cityData);
 uint32_t RandomNumber(void);
 void onGpioRise(uint gpio, uint32_t events);
 // *** Task Declarations ***
@@ -159,14 +166,27 @@ void InitializeHardware(void)
     rtc_init();
     stdio_init_all();
 
-    gpio_init(2);
-    gpio_init(28);
-    gpio_set_dir(2, false);
-    gpio_set_dir(28, true);
-    gpio_put(28, false);
-    gpio_set_irq_enabled_with_callback(2, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
+    gpio_init(PIN_EVENT_GEN);
+    gpio_init(PIN_PRINT_ENABLE);
+    gpio_init(PIN_PRINT_LOG);
+    gpio_init(PIN_PRINT_STATUS);
+    gpio_init(PIN_EVENT_READY);
 
-    gpio_set_function(26, GPIO_FUNC_PWM);
+    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
+    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
+    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
+
+    gpio_set_dir(PIN_EVENT_READY, GPIO_OUT);
+    gpio_set_dir(PIN_PRINT_ENABLE, GPIO_OUT);
+
+    gpio_put(PIN_EVENT_READY, false);
+
+    gpio_put(PIN_PRINT_ENABLE, true);
+
+    gpio_set_irq_enabled_with_callback(PIN_EVENT_GEN, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
+    gpio_set_irq_enabled_with_callback(PIN_PRINT_LOG, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
+    gpio_set_irq_enabled_with_callback(PIN_PRINT_STATUS, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
+
     gpio_set_function(27, GPIO_FUNC_PWM);
     pwm_set_enabled(5, true);
     pwm_set_wrap(5, 1024);
@@ -220,7 +240,7 @@ void GenerateRandomEvent(void)
 void InitializeHelperTasks(CityData_t *cityData)
 {
     xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
-            NULL, LOGGER_PRIORITY, NULL);
+            cityData, LOGGER_PRIORITY, NULL);
     xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
             &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, &eventGeneratorHandle);
 }
@@ -247,12 +267,41 @@ void onGpioRise(uint gpio, uint32_t events)
     if (currentMs - gpioBounceTable[gpio] < buttonCooldownMs) return;
     gpioBounceTable[gpio] = currentMs;
 
-    // TODO: if using other gpio interrupts in the future,
-    // this will become a switch case
-    // switch (gpio) {
-    // case 28:
-    // etc...
-    xTaskResumeFromISR(eventGeneratorHandle);
+    switch (gpio)
+    {
+        case PIN_EVENT_GEN:
+            xTaskResumeFromISR(eventGeneratorHandle);
+            break;
+        case PIN_PRINT_LOG:
+            loggerBehavior = PRINT_LOG;
+            break;
+        case PIN_PRINT_STATUS:
+            loggerBehavior = PRINT_STATUS;
+            break;
+    }
+}
+
+void PrintStatus(CityData_t *cityData)
+{
+    printf("\n~~~~ CITY STATUS ~~~~\n\n~~ Unhandled Events: %u ~~\n\n",
+            eventBacklog);
+
+    for (int i = 0; i < NUM_DEPARTMENTS; i++)
+    {
+        printf("~ %s Department ~\n", departmentNames[i]);
+
+        for (int j = 0; j < cityData->departments[i].agentCount; j++)
+        {
+            printf("~~ Unit %s Status: %s\n", 
+                    cityData->departments[i].agentStates[j].name,
+                    cityData->departments[i].agentStates[j].busy
+                    ? "Busy" : "Free");
+        }
+
+        printf("\n");
+    }
+
+    printf("~~~~~~~~~~~~~~~~~~~~~\n");
 }
 
 // *** Task Definitions ***
@@ -265,18 +314,15 @@ void CentralDispatcherTask(void *param)
     CityData_t *cityData = (CityData_t *)param;
     CityEvent_t handledEvent;
 
-    print_timestamp();
-    printf(logFormats[eLOG_DISPATCHER_WAITING]);
+    logger_log_dispatcher_waiting();
 
     for(;;)
     {
-        print_timestamp();
-        printf(logFormats[eLOG_DISPATCHER_WAITING]);
+        logger_log_dispatcher_waiting();
 
         if (xQueueReceive(cityData->incomingQueue, &(handledEvent), portMAX_DELAY))
         {
-            print_timestamp();
-            printf(logFormats[eLOG_DISPATCHER_ROUTING], handledEvent.description, departmentNames[handledEvent.code]);
+            logger_log_dispatcher_routing(handledEvent.description, departmentNames[handledEvent.code]);
 
             xQueueSend(cityData->departments[handledEvent.code].jobQueue, &(handledEvent), portMAX_DELAY);
             eventBacklog++;
@@ -293,8 +339,7 @@ void DepartmentManagerTask(void *param)
     CityDepartment_t *departmentData = (CityDepartment_t *)param;
     CityEvent_t *handledEvent = pvPortMalloc(sizeof(CityEvent_t));
 
-    print_timestamp();
-    printf(logFormats[eLOG_DISPATCHER_ROUTING], departmentNames[departmentData->code]);
+    logger_log_manager_routing(departmentNames[handledEvent->code], handledEvent->description);
 
     for (int i = 0; i < departmentData->agentCount; i++)
     {
@@ -304,14 +349,11 @@ void DepartmentManagerTask(void *param)
 
     for(;;)
     {
-        print_timestamp();
-        printf(logFormats[eLOG_MANAGER_WAITING], departmentNames[departmentData->code]);
+        logger_log_manager_waiting(departmentNames[departmentData->code]);
 
         if (xQueueReceive(departmentData->jobQueue, handledEvent, portMAX_DELAY))
         {
-            print_timestamp();
-            printf(logFormats[eLOG_MANAGER_ASSIGNING_EVENT], departmentNames[departmentData->code], handledEvent->description);
-
+            logger_log_manager_routing(departmentNames[departmentData->code], handledEvent->description);
             bool assigned = false;
 
             do
@@ -340,27 +382,22 @@ void DepartmentAgentTask(void *param)
 {
     CityDepartmentAgentState_t *agentState = (CityDepartmentAgentState_t *)param;
 
-    print_timestamp();
-    printf(logFormats[eLOG_UNIT_INITIALIZED], agentState->name);
+    logger_log_unit_initialized(agentState->name);
 
     for(;;)
     {
-        print_timestamp();
-        printf(logFormats[eLOG_UNIT_AWAITING], agentState->name);
+        logger_log_unit_waiting(agentState->name);
 
         while(!agentState->busy)
         {
             vTaskDelay(1);
         }
 
-        print_timestamp();
-        printf(logFormats[eLOG_UNIT_HANDLING], agentState->name, agentState->currentEvent.description);
-
+        logger_log_unit_handling(agentState->name, agentState->currentEvent.description);
         vTaskDelay(agentState->currentEvent.ticks);
         agentState->busy = false;
 
-        print_timestamp();
-        printf(logFormats[eLOG_UNIT_FINISHED], agentState->name, agentState->currentEvent.description);
+        logger_log_unit_finished(agentState->name, agentState->currentEvent.description);
         eventBacklog--;
     }
 }
@@ -371,16 +408,23 @@ void DepartmentAgentTask(void *param)
 void LoggerTask(void *param)
 {
     //TODO: actually implement the logger in a meaningful way
+    CityData_t *cityData = (CityData_t *)param;
+
+    loggerBehavior = PRINT_LOG;
     vTaskDelay(INITIAL_SLEEP);
 
-    print_timestamp();
-    printf(logFormats[eLOG_LOGGER_STARTING]);
+    logger_log_logger_starting();
 
     for(;;)
     {
         vTaskDelay(LOGGER_SLEEP);
         uint16_t level = 256/(1+(eventBacklog*4));
         pwm_set_both_levels(5, level, level);
+
+        if (loggerBehavior == PRINT_STATUS)
+        {
+            PrintStatus(cityData);
+        }
     }
 }
 
@@ -390,9 +434,7 @@ void LoggerTask(void *param)
 void EventGeneratorTask(void *param)
 {
     vTaskDelay(INITIAL_SLEEP);
-
-    print_timestamp();
-    printf(logFormats[eLOG_GENERATOR_STARTING]);
+    logger_log_eventgen_starting();
 
     QueueHandle_t *incomingQueue = (QueueHandle_t *)param;
     uint32_t nextSleep;
@@ -401,8 +443,7 @@ void EventGeneratorTask(void *param)
 
     for(;;)
     {
-        print_timestamp();
-        printf(logFormats[eLOG_GENERATOR_AWAITING]);
+        logger_log_eventgen_waiting();
 
         gpio_put(28, true);
         vTaskSuspend(NULL);
@@ -414,10 +455,7 @@ void EventGeneratorTask(void *param)
         nextEvent->ticks = eventTemplates[nextEventTemplate].minTicks
             + (RandomNumber()%(eventTemplates[nextEventTemplate].maxTicks-eventTemplates[nextEventTemplate].minTicks));
 
-        print_timestamp();
-        printf(logFormats[eLOG_GENERATOR_EMITTING],
-
-                nextEvent->description, pdTICKS_TO_MS(nextEvent->ticks));
+        logger_log_eventgen_emitting( nextEvent->description, pdTICKS_TO_MS(nextEvent->ticks));
         xQueueSend(*incomingQueue, nextEvent, portMAX_DELAY);
 
         //nextSleep = EVENT_GENERATOR_SLEEP_MIN

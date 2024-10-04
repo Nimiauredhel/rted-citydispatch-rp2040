@@ -30,8 +30,36 @@ typedef const enum LogFormatId
     eLOG_LOGGER_STARTING,
 } LogFormatId_t;
 
-extern const char logFormats[15][LOG_MAX_LENGTH];
+typedef enum LoggerBehavior
+{
+    NONE = 0,
+    PRINT_LOG = 1,
+    PRINT_STATUS = 2
+} LoggerBehavior_t;
 
-void print_timestamp();
+extern const char logFormats[15][LOG_MAX_LENGTH];
+extern LoggerBehavior_t loggerBehavior;
+
+void logger_print_timestamp();
+
+void logger_log_dispatcher_starting(void);
+void logger_log_dispatcher_waiting(void);
+void logger_log_dispatcher_routing(char *event_name, const char *department_name);
+
+void logger_log_manager_starting(const char *department_name);
+void logger_log_manager_initializing(const char *department_name, uint8_t numAgents);
+void logger_log_manager_waiting(const char *department_name);
+void logger_log_manager_routing(const char *department_name, char *event_name);
+
+void logger_log_unit_waiting(char *unit_name);
+void logger_log_unit_initialized(char *unit_name);
+void logger_log_unit_handling(char *unit_name, char *event_name);
+void logger_log_unit_finished(char *unit_name, char *event_name);
+
+void logger_log_eventgen_starting(void);
+void logger_log_eventgen_waiting(void);
+void logger_log_eventgen_emitting(char *event_name, uint32_t event_ms);
+
+void logger_log_logger_starting(void);
 
 #endif
