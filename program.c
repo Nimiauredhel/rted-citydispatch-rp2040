@@ -18,6 +18,7 @@
 #include "queue.h"
 // Application headers
 #include "logging.h"
+#include "notes.h"
 
 // *** Definitions ***
 #define NUM_DEPARTMENTS (4)
@@ -32,16 +33,32 @@
 #define DEPARTMENT_HANDLER_PRIORITY (200)
 #define EVENT_GENERATOR_PRIORITY (250)
 
-#define INITIAL_SLEEP (pdMS_TO_TICKS(1500))
+#define INITIAL_SLEEP (pdMS_TO_TICKS(1000))
 #define EVENT_GENERATOR_SLEEP_MAX (pdMS_TO_TICKS(6000))
 #define EVENT_GENERATOR_SLEEP_MIN (pdMS_TO_TICKS(2000))
-#define LOGGER_SLEEP (pdMS_TO_TICKS(1000))
+#define LOGGER_SLEEP (pdMS_TO_TICKS(200))
 
-#define PIN_EVENT_GEN 2
-#define PIN_PRINT_LOG 4
-#define PIN_PRINT_ENABLE 6
-#define PIN_PRINT_STATUS 8
-#define PIN_EVENT_READY 28
+#define PIN_LCD_DIGIT_4 0
+#define PIN_LCD_SEGMENT_G 1
+#define PIN_LCD_SEGMENT_C 2
+#define PIN_LCD_SEGMENT_DP 3
+#define PIN_LCD_SEGMENT_D 4
+#define PIN_LCD_SEGMENT_E 5
+#define PIN_LCD_SEGMENT_B 6
+#define PIN_LCD_DIGIT_3 7
+#define PIN_LCD_DIGIT_2 8
+#define PIN_LCD_DIGIT_1 9
+#define PIN_LCD_SEGMENT_A 10
+#define PIN_LCD_SEGMENT_F 11
+
+#define PIN_EVENT_GEN 12
+#define PIN_PWM_AUDIO 13
+#define PIN_PRINT_STATUS 14
+#define PIN_PRINT_ENABLE 26
+#define PIN_PRINT_LOG 28
+#define PIN_EVENT_READY 29
+
+#define SLICE_PWM_AUDIO 6
 
 // *** Types ***
 typedef enum DepartmentCode
@@ -109,6 +126,7 @@ const CityEventTemplate_t eventTemplates[8] =
 };
 
 // *** Global Variables ***
+// TODO: extract to separate files to make them less exposed
 
 // handle of the event generation task,
 // only exposed here to allow it
@@ -117,7 +135,7 @@ TaskHandle_t eventGeneratorHandle;
 
 // tracking time since last gpio HIGH
 // to enforce cooldown & debouncing
-uint32_t gpioBounceTable[4] = {0};
+uint32_t gpioBounceTable[30] = {0};
 
 // a counter of pending/ongoing events
 // for user feedback (in this case, LED brightness)
@@ -131,11 +149,14 @@ void InitializeHelperTasks(CityData_t *cityData);
 void PrintStatus(CityData_t *cityData);
 uint32_t RandomNumber(void);
 void onGpioRise(uint gpio, uint32_t events);
+void showDigit(char character, uint8_t digit);
 // *** Task Declarations ***
 void CentralDispatcherTask(void *param);
 void DepartmentManagerTask(void *param);
 void DepartmentAgentTask(void *param);
 void LoggerTask(void *param);
+void LCDTask(void *param);
+void AudioTask(void *param);
 void EventGeneratorTask(void *param);
 
 // *** Function Definitions ***
@@ -166,31 +187,39 @@ void InitializeHardware(void)
     rtc_init();
     stdio_init_all();
 
+    // segment display gpio pins
+    for (int i = 0; i < 12; i++)
+    {
+        gpio_init(i);
+        gpio_set_dir(i, GPIO_OUT);
+    }
+
     gpio_init(PIN_EVENT_GEN);
     gpio_init(PIN_PRINT_ENABLE);
     gpio_init(PIN_PRINT_LOG);
     gpio_init(PIN_PRINT_STATUS);
     gpio_init(PIN_EVENT_READY);
 
-    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
-    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
-    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
-
-    gpio_set_dir(PIN_EVENT_READY, GPIO_OUT);
     gpio_set_dir(PIN_PRINT_ENABLE, GPIO_OUT);
+    gpio_set_dir(PIN_EVENT_READY, GPIO_OUT);
 
-    gpio_put(PIN_EVENT_READY, false);
+    gpio_set_dir(PIN_EVENT_GEN, GPIO_IN);
+    gpio_set_dir(PIN_PRINT_LOG, GPIO_IN);
+    gpio_set_dir(PIN_PRINT_STATUS, GPIO_IN);
 
+    gpio_put(PIN_EVENT_READY, true);
     gpio_put(PIN_PRINT_ENABLE, true);
 
     gpio_set_irq_enabled_with_callback(PIN_EVENT_GEN, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
     gpio_set_irq_enabled_with_callback(PIN_PRINT_LOG, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
     gpio_set_irq_enabled_with_callback(PIN_PRINT_STATUS, GPIO_IRQ_EDGE_RISE, true, &onGpioRise);
 
-    gpio_set_function(27, GPIO_FUNC_PWM);
-    pwm_set_enabled(5, true);
-    pwm_set_wrap(5, 1024);
-    pwm_set_both_levels(5, 0, 0);
+    gpio_set_function(PIN_PWM_AUDIO, GPIO_FUNC_PWM);
+    pwm_set_enabled(SLICE_PWM_AUDIO, true);
+    pwm_set_clkdiv_int_frac(SLICE_PWM_AUDIO, 255, 15);
+    pwm_set_phase_correct(SLICE_PWM_AUDIO, true);
+    pwm_set_wrap(SLICE_PWM_AUDIO, G3);
+    pwm_set_chan_level(SLICE_PWM_AUDIO, 1, 6);
 }
 
 CityData_t* InitializeCityData(void)
@@ -241,6 +270,13 @@ void InitializeHelperTasks(CityData_t *cityData)
 {
     xTaskCreate( LoggerTask, "Logger", TASK_STACK_SIZE,
             cityData, LOGGER_PRIORITY, NULL);
+    
+    xTaskCreate( AudioTask, "Audio", TASK_STACK_SIZE/4,
+            NULL, 25, NULL);
+
+    xTaskCreate( LCDTask, "LCD", TASK_STACK_SIZE/4,
+            cityData, 25, NULL);
+            
     xTaskCreate( EventGeneratorTask, "EventGenerator", TASK_STACK_SIZE,
             &(cityData->incomingQueue), EVENT_GENERATOR_PRIORITY, &eventGeneratorHandle);
 }
@@ -279,6 +315,77 @@ void onGpioRise(uint gpio, uint32_t events)
             loggerBehavior = PRINT_STATUS;
             break;
     }
+}
+
+void showDigit(char character, uint8_t digit)
+{
+    gpio_put(PIN_LCD_DIGIT_1, digit == 0);
+    gpio_put(PIN_LCD_DIGIT_2, digit == 1);
+    gpio_put(PIN_LCD_DIGIT_3, digit == 2);
+    gpio_put(PIN_LCD_DIGIT_4, digit == 3);
+
+    char *c = "  ";
+    sprintf(c, "%c ", character);
+
+    switch(c[0])
+    {
+        case '0':
+            gpio_put(PIN_LCD_SEGMENT_A, true);
+            gpio_put(PIN_LCD_SEGMENT_B, true);
+            gpio_put(PIN_LCD_SEGMENT_C, true);
+            gpio_put(PIN_LCD_SEGMENT_D, true);
+            gpio_put(PIN_LCD_SEGMENT_E, true);
+            gpio_put(PIN_LCD_SEGMENT_F, true);
+            gpio_put(PIN_LCD_SEGMENT_G, false);
+            break;
+        case '1':
+            gpio_put(PIN_LCD_SEGMENT_A, false);
+            gpio_put(PIN_LCD_SEGMENT_B, true);
+            gpio_put(PIN_LCD_SEGMENT_C, true);
+            gpio_put(PIN_LCD_SEGMENT_D, false);
+            gpio_put(PIN_LCD_SEGMENT_E, false);
+            gpio_put(PIN_LCD_SEGMENT_F, false);
+            gpio_put(PIN_LCD_SEGMENT_G, false);
+            break;
+        case '2':
+            gpio_put(PIN_LCD_SEGMENT_A, true);
+            gpio_put(PIN_LCD_SEGMENT_B, true);
+            gpio_put(PIN_LCD_SEGMENT_C, false);
+            gpio_put(PIN_LCD_SEGMENT_D, true);
+            gpio_put(PIN_LCD_SEGMENT_E, true);
+            gpio_put(PIN_LCD_SEGMENT_F, false);
+            gpio_put(PIN_LCD_SEGMENT_G, true);
+            break;
+        case '3':
+            gpio_put(PIN_LCD_SEGMENT_A, true);
+            gpio_put(PIN_LCD_SEGMENT_B, true);
+            gpio_put(PIN_LCD_SEGMENT_C, true);
+            gpio_put(PIN_LCD_SEGMENT_D, true);
+            gpio_put(PIN_LCD_SEGMENT_E, false);
+            gpio_put(PIN_LCD_SEGMENT_F, false);
+            gpio_put(PIN_LCD_SEGMENT_G, true);
+            break;
+        case '4':
+            gpio_put(PIN_LCD_SEGMENT_A, false);
+            gpio_put(PIN_LCD_SEGMENT_B, true);
+            gpio_put(PIN_LCD_SEGMENT_C, true);
+            gpio_put(PIN_LCD_SEGMENT_D, false);
+            gpio_put(PIN_LCD_SEGMENT_E, false);
+            gpio_put(PIN_LCD_SEGMENT_F, true);
+            gpio_put(PIN_LCD_SEGMENT_G, true);
+            break;
+        default:
+            gpio_put(PIN_LCD_SEGMENT_A, false);
+            gpio_put(PIN_LCD_SEGMENT_B, false);
+            gpio_put(PIN_LCD_SEGMENT_C, false);
+            gpio_put(PIN_LCD_SEGMENT_D, false);
+            gpio_put(PIN_LCD_SEGMENT_E, false);
+            gpio_put(PIN_LCD_SEGMENT_F, false);
+            gpio_put(PIN_LCD_SEGMENT_G, true);
+            break;
+    }
+
+    gpio_put(PIN_LCD_SEGMENT_DP, true);
 }
 
 void PrintStatus(CityData_t *cityData)
@@ -418,13 +525,49 @@ void LoggerTask(void *param)
     for(;;)
     {
         vTaskDelay(LOGGER_SLEEP);
-        uint16_t level = 256/(1+(eventBacklog*4));
-        pwm_set_both_levels(5, level, level);
 
         if (loggerBehavior == PRINT_STATUS)
         {
             PrintStatus(cityData);
         }
+    }
+}
+
+void LCDTask(void *param)
+{
+    CityData_t *cityData = (CityData_t *)param;
+    vTaskDelay(INITIAL_SLEEP);
+
+    for(;;)
+    {
+        for (int i = 0; i < NUM_DEPARTMENTS; i++)
+        {
+            char freeAgents = 0;
+
+            for (int j = 0; j < cityData->departments[i].agentCount; j++)
+            {
+                if (!cityData->departments[i].agentStates[j].busy)
+                    freeAgents++;
+            }
+
+            showDigit(i, '0' + freeAgents);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
+
+// TODO: will play audio cues from a queue
+void AudioTask(void *param)
+{
+    vTaskDelay(INITIAL_SLEEP);
+
+    for(;;)
+    {
+        pwm_set_wrap(SLICE_PWM_AUDIO, Eb4);
+        pwm_set_chan_level(SLICE_PWM_AUDIO, PWM_CHAN_B, 4);
+        vTaskDelay(pdMS_TO_TICKS(10 + 2000/(eventBacklog+1)));
+        pwm_set_chan_level(SLICE_PWM_AUDIO, PWM_CHAN_B, 0);
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -445,9 +588,9 @@ void EventGeneratorTask(void *param)
     {
         logger_log_eventgen_waiting();
 
-        gpio_put(28, true);
+        gpio_put(PIN_EVENT_READY, true);
         vTaskSuspend(NULL);
-        gpio_put(28, false);
+        gpio_put(PIN_EVENT_READY, false);
 
         nextEventTemplate = RandomNumber()%8;
         nextEvent->code = eventTemplates[nextEventTemplate].code;
